@@ -48,6 +48,30 @@ export function useUserProfile() {
   useEffect(() => {
     if (profile) {
       loadProfileData();
+      // Always refresh profile from DB to ensure latest profile_picture_url after session/login changes
+      (async () => {
+        try {
+          const { data: fresh, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', profile.id)
+            .single();
+          if (!error && fresh) {
+            setFormData((prev) => ({
+              ...prev,
+              full_name: fresh.full_name || '',
+              bio: fresh.bio || '',
+              phone_number: fresh.phone_number || '',
+              language_preference: fresh.language_preference || 'en',
+              timezone: fresh.timezone || 'UTC',
+              gender: fresh.gender || 'other',
+              dob: fresh.dob || ''
+            }));
+          }
+        } catch (e) {
+          // ignore
+        }
+      })();
       loadSocialLinks();
     }
   }, [profile]);

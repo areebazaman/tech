@@ -304,6 +304,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       expires_at: Math.floor(Date.now() / 1000) + 3600,
     });
     setLoading(false);
+
+    // Attempt to load real data from DB to reflect latest profile_picture_url, etc.
+    // This works in dev if RLS is relaxed; otherwise it silently falls back to the placeholder.
+    (async () => {
+      try {
+        const { data: userRow, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', tUser.id)
+          .single();
+        if (!error && userRow) {
+          // Preserve existing derived fields like school/role from earlier fetch if present
+          setProfile((prev) => ({
+            ...(prev || {} as any),
+            ...userRow,
+          }));
+        }
+      } catch (e) {
+        // ignore in test mode
+      }
+    })();
   };
 
   return (
