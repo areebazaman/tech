@@ -144,7 +144,8 @@ export function useUserProfile() {
       const fileName = `${Date.now()}.${fileExt}`;
       const filePath = `${profile.id}/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage
+      // Fail fast if upload hangs (network/policy issues)
+      const uploadPromise = supabase.storage
         .from('Avatar')
         .upload(filePath, file, {
           cacheControl: '3600',
@@ -152,13 +153,30 @@ export function useUserProfile() {
           contentType: file.type,
         });
 
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('UPLOAD_TIMEOUT')), 15000)
+      );
+
+      let uploadError: any = null;
+      try {
+        // @ts-expect-error Promise race types
+        const result = await Promise.race([uploadPromise, timeoutPromise]);
+        // result may be void on success
+      } catch (e: any) {
+        uploadError = e;
+      }
+
       if (uploadError) {
         console.error('Upload error:', uploadError);
-        toast({
-          title: 'Upload failed',
-          description: uploadError.message || 'Failed to upload profile picture.',
-          variant: 'destructive',
-        });
+        let description = uploadError?.message || 'Failed to upload profile picture.';
+        if (description === 'UPLOAD_TIMEOUT') {
+          description = "Upload timed out. Check your network and ensure the 'Avatar' bucket exists with proper policies.";
+        } else if (uploadError?.statusCode === '404' || /Not\s*Found|bucket/i.test(description)) {
+          description = "Bucket 'Avatar' not found. Create a Storage bucket named exactly 'Avatar' in Supabase.";
+        } else if (uploadError?.statusCode === '403' || /Access\s*Denied|permission/i.test(description)) {
+          description = "Permission denied. Update Storage policies to allow authenticated users to upload to 'Avatar'.";
+        }
+        toast({ title: 'Upload failed', description, variant: 'destructive' });
         return null;
       }
 
@@ -166,6 +184,14 @@ export function useUserProfile() {
         .from('Avatar')
         .getPublicUrl(filePath);
 
+      if (!publicUrl) {
+        toast({
+          title: 'URL not generated',
+          description: 'Image uploaded but no public URL was returned. Ensure the bucket is public or use signed URLs.',
+          variant: 'destructive',
+        });
+        return null;
+      }
       return publicUrl;
     } catch (error: any) {
       console.error('Error uploading profile picture:', error);
