@@ -147,9 +147,9 @@ export function useUserProfile() {
         const msg = preflight.error.message || '';
         let description = msg;
         if (/bucket|not\s*found/i.test(msg)) {
-          description = "Bucket 'Avatar' not found. Create it in Supabase Storage.";
+          description = "Bucket 'avatars' not found. Create it in Supabase Storage.";
         } else if (/permission|access\s*denied|not\s*authorized/i.test(msg)) {
-          description = "Permission denied. Update Storage policies to allow authenticated users to list/upload to 'Avatar'.";
+          description = "Permission denied. Update Storage policies to allow authenticated users to list/upload to 'avatars'.";
         }
         toast({ title: 'Storage not accessible', description, variant: 'destructive' });
         return null;
@@ -183,13 +183,13 @@ export function useUserProfile() {
         uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
       } catch (e: any) {
         console.error('Upload error:', e);
-        let description = uploadError?.message || 'Failed to upload profile picture.';
+        let description = e?.message || 'Failed to upload profile picture.';
         if (e?.message === 'UPLOAD_TIMEOUT') {
-          description = "Upload timed out. Check your network and ensure the 'Avatar' bucket exists with proper policies.";
+          description = "Upload timed out. Check your network and ensure the 'avatars' bucket exists with proper policies.";
         } else if (e?.statusCode === '404' || /Not\s*Found|bucket/i.test(description)) {
-          description = "Bucket 'Avatar' not found. Create a Storage bucket named exactly 'Avatar' in Supabase.";
+          description = "Bucket 'avatars' not found. Create a Storage bucket named exactly 'avatars' in Supabase.";
         } else if (e?.statusCode === '403' || /Access\s*Denied|permission/i.test(description)) {
-          description = "Permission denied. Update Storage policies to allow authenticated users to upload to 'Avatar'.";
+          description = "Permission denied. Update Storage policies to allow authenticated users to upload to 'avatars'.";
         }
         toast({ title: 'Upload failed', description, variant: 'destructive' });
         return null;
