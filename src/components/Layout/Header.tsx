@@ -81,7 +81,7 @@ const Header: React.FC<HeaderProps> = ({ sidebarOpen, setSidebarOpen, setActiveV
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="flex items-center space-x-2">
                 <Avatar className="w-8 h-8">
-                  <AvatarImage src={profile?.avatar_url || "/placeholder.svg"} alt="Profile" />
+                  <AvatarImage src={profile?.profile_picture_url || profile?.avatar_url || "/placeholder.svg"} alt="Profile" />
                   <AvatarFallback className="bg-primary text-primary-foreground text-sm">
                     {profile?.full_name ? profile.full_name.split(' ').map(n => n[0]).join('').toUpperCase() : 'U'}
                   </AvatarFallback>
