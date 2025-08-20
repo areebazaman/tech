@@ -30,6 +30,13 @@ app.get("/", (c) =>
 // Testing-only: Upload avatar without client session (uses service role if available)
 app.post("/api/testing/upload-avatar", async (c) => {
   try {
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return c.json({
+        success: false,
+        message:
+          "Backend missing SUPABASE_SERVICE_ROLE_KEY. Set it in the backend environment to enable testing uploads without client auth.",
+      }, 400);
+    }
     const body = await c.req.json<{ userId: string; fileBase64?: string; fileUrl?: string; filename?: string }>();
     const { userId, fileBase64, fileUrl, filename } = body || ({} as any);
 
