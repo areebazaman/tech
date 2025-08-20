@@ -121,7 +121,7 @@ export function useUserProfile() {
     try {
       // Check if avatars bucket exists
       const { data: buckets } = await supabase.storage.listBuckets();
-      const avatarsBucket = buckets?.find(bucket => bucket.name === 'avatars');
+      const avatarsBucket = buckets?.find(bucket => bucket.name === 'Avatar');
       
       if (!avatarsBucket) {
         toast({
@@ -139,7 +139,7 @@ export function useUserProfile() {
 
       // Upload file
       const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('avatars')
+        .from('Avatar')
         .upload(filePath, file, { 
           cacheControl: '3600', 
           upsert: false 
@@ -157,7 +157,7 @@ export function useUserProfile() {
 
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
-        .from('avatars')
+        .from('Avatar')
         .getPublicUrl(filePath);
 
       return publicUrl;

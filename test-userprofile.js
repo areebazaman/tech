@@ -105,7 +105,7 @@ async function testUserProfile() {
     if (bucketError) {
       console.log('❌ Storage error:', bucketError.message);
     } else {
-      const avatarsBucket = buckets.find(bucket => bucket.name === 'avatars');
+      const avatarsBucket = buckets.find(bucket => bucket.name === 'Avatar');
       if (avatarsBucket) {
         console.log('✅ Avatars storage bucket found');
         console.log(`   - Public: ${avatarsBucket.public}`);
