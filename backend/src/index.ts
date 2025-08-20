@@ -9,12 +9,7 @@ const app = new Hono();
 app.use(
   "/*",
   cors({
-    origin: [
-      "http://localhost:8080", // your frontend
-      // add others only if you actually use them:
-      // "http://localhost:5173",
-      // "http://localhost:3000",
-    ],
+    origin: ["http://localhost:8080", "http://localhost:5173", "http://localhost:3000"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,

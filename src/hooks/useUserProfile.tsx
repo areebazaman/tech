@@ -139,27 +139,33 @@ export function useUserProfile() {
 
     setUploadingPicture(true);
     try {
-      // Ensure we have a real Supabase session (not test mode)
+      // Check for a real Supabase session
       const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData?.session?.access_token) {
-        toast({
-          title: 'Not signed in',
-          description: 'Please sign in with Supabase before uploading a profile picture.',
-          variant: 'destructive',
+      const hasSession = Boolean(sessionData?.session?.access_token);
+
+      if (!hasSession) {
+        // Testing fallback: upload via backend admin endpoint using userId
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
         });
-        return null;
-      }
-      const sessionUserId = sessionData.session.user?.id;
-      if (sessionUserId && sessionUserId !== profile.id) {
-        toast({
-          title: 'Session mismatch',
-          description: 'Your session user does not match the profile. Please sign in again.',
-          variant: 'destructive',
+
+        const resp = await fetch('http://localhost:3001/api/testing/upload-avatar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: profile.id, fileBase64: dataUrl, filename: file.name })
         });
-        return null;
+        const json = await resp.json();
+        if (!json.success) {
+          toast({ title: 'Upload failed', description: json.message || 'Backend upload failed.', variant: 'destructive' });
+          return null;
+        }
+        return json.publicUrl as string;
       }
 
-      // Quick preflight to surface bucket/permission issues fast
+      // Authenticated path: direct upload to Supabase Storage
       const preflight = await supabase.storage
         .from('avatars')
         .list(profile.id, { limit: 1 });
@@ -175,12 +181,10 @@ export function useUserProfile() {
         return null;
       }
 
-      // Generate unique filename and attempt upload directly
       const fileExt = file.name.split('.').pop() || 'png';
       const fileName = `${Date.now()}.${fileExt}`;
       const filePath = `${profile.id}/${fileName}`;
 
-      // Fail fast if upload hangs (network/policy issues)
       const uploadPromise = supabase.storage
         .from('avatars')
         .upload(filePath, file, {
@@ -197,10 +201,9 @@ export function useUserProfile() {
         setTimeout(() => reject(new Error('UPLOAD_TIMEOUT')), 15000)
       );
 
-      let uploadResult: any;
       try {
         // @ts-expect-error Promise race types
-        uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
+        await Promise.race([uploadPromise, timeoutPromise]);
       } catch (e: any) {
         console.error('Upload error:', e);
         let description = e?.message || 'Failed to upload profile picture.';
