@@ -139,6 +139,26 @@ export function useUserProfile() {
 
     setUploadingPicture(true);
     try {
+      // Ensure we have a real Supabase session (not test mode)
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData?.session?.access_token) {
+        toast({
+          title: 'Not signed in',
+          description: 'Please sign in with Supabase before uploading a profile picture.',
+          variant: 'destructive',
+        });
+        return null;
+      }
+      const sessionUserId = sessionData.session.user?.id;
+      if (sessionUserId && sessionUserId !== profile.id) {
+        toast({
+          title: 'Session mismatch',
+          description: 'Your session user does not match the profile. Please sign in again.',
+          variant: 'destructive',
+        });
+        return null;
+      }
+
       // Quick preflight to surface bucket/permission issues fast
       const preflight = await supabase.storage
         .from('avatars')
