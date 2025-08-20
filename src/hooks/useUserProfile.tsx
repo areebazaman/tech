@@ -141,7 +141,7 @@ export function useUserProfile() {
     try {
       // Quick preflight to surface bucket/permission issues fast
       const preflight = await supabase.storage
-        .from('Avatar')
+        .from('avatars')
         .list(profile.id, { limit: 1 });
       if (preflight.error) {
         const msg = preflight.error.message || '';
@@ -162,7 +162,7 @@ export function useUserProfile() {
 
       // Fail fast if upload hangs (network/policy issues)
       const uploadPromise = supabase.storage
-        .from('Avatar')
+        .from('avatars')
         .upload(filePath, file, {
           cacheControl: '3600',
           upsert: false,
@@ -196,7 +196,7 @@ export function useUserProfile() {
       }
 
       const { data: { publicUrl } } = supabase.storage
-        .from('Avatar')
+        .from('avatars')
         .getPublicUrl(filePath);
 
       if (!publicUrl) {
