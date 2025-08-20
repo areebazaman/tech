@@ -116,57 +116,104 @@ export function useUserProfile() {
 
   const uploadProfilePicture = async (file: File): Promise<string | null> => {
     if (!profile?.id) return null;
-    
+
+    // Basic validation to avoid long waits on invalid files
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      toast({
+        title: 'Invalid file type',
+        description: 'Please upload a JPG, PNG, GIF, or WEBP image.',
+        variant: 'destructive',
+      });
+      return null;
+    }
+    const maxSizeBytes = 5 * 1024 * 1024;
+    if (file.size > maxSizeBytes) {
+      toast({
+        title: 'File too large',
+        description: 'Please upload an image smaller than 5MB.',
+        variant: 'destructive',
+      });
+      return null;
+    }
+
     setUploadingPicture(true);
     try {
-      // Check if avatars bucket exists
-      const { data: buckets } = await supabase.storage.listBuckets();
-      const avatarsBucket = buckets?.find(bucket => bucket.name === 'avatars');
-      
-      if (!avatarsBucket) {
-        toast({
-          title: "Storage Error",
-          description: "Profile picture storage is not configured. Please contact support.",
-          variant: "destructive"
-        });
+      // Quick preflight to surface bucket/permission issues fast
+      const preflight = await supabase.storage
+        .from('avatars')
+        .list(profile.id, { limit: 1 });
+      if (preflight.error) {
+        const msg = preflight.error.message || '';
+        let description = msg;
+        if (/bucket|not\s*found/i.test(msg)) {
+          description = "Bucket 'avatars' not found. Create it in Supabase Storage.";
+        } else if (/permission|access\s*denied|not\s*authorized/i.test(msg)) {
+          description = "Permission denied. Update Storage policies to allow authenticated users to list/upload to 'avatars'.";
+        }
+        toast({ title: 'Storage not accessible', description, variant: 'destructive' });
         return null;
       }
 
-      // Generate unique filename
-      const fileExt = file.name.split('.').pop();
+      // Generate unique filename and attempt upload directly
+      const fileExt = file.name.split('.').pop() || 'png';
       const fileName = `${Date.now()}.${fileExt}`;
       const filePath = `${profile.id}/${fileName}`;
 
-      // Upload file
-      const { data: uploadData, error: uploadError } = await supabase.storage
+      // Fail fast if upload hangs (network/policy issues)
+      const uploadPromise = supabase.storage
         .from('avatars')
-        .upload(filePath, file, { 
-          cacheControl: '3600', 
-          upsert: false 
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type,
+        })
+        .then(({ data, error }) => {
+          if (error) throw error;
+          return data;
         });
 
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        toast({
-          title: "Upload Failed",
-          description: "Failed to upload profile picture. Please try again.",
-          variant: "destructive"
-        });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('UPLOAD_TIMEOUT')), 15000)
+      );
+
+      let uploadResult: any;
+      try {
+        // @ts-expect-error Promise race types
+        uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
+      } catch (e: any) {
+        console.error('Upload error:', e);
+        let description = e?.message || 'Failed to upload profile picture.';
+        if (e?.message === 'UPLOAD_TIMEOUT') {
+          description = "Upload timed out. Check your network and ensure the 'avatars' bucket exists with proper policies.";
+        } else if (e?.statusCode === '404' || /Not\s*Found|bucket/i.test(description)) {
+          description = "Bucket 'avatars' not found. Create a Storage bucket named exactly 'avatars' in Supabase.";
+        } else if (e?.statusCode === '403' || /Access\s*Denied|permission/i.test(description)) {
+          description = "Permission denied. Update Storage policies to allow authenticated users to upload to 'avatars'.";
+        }
+        toast({ title: 'Upload failed', description, variant: 'destructive' });
         return null;
       }
 
-      // Get public URL
       const { data: { publicUrl } } = supabase.storage
         .from('avatars')
         .getPublicUrl(filePath);
 
+      if (!publicUrl) {
+        toast({
+          title: 'URL not generated',
+          description: 'Image uploaded but no public URL was returned. Ensure the bucket is public or use signed URLs.',
+          variant: 'destructive',
+        });
+        return null;
+      }
       return publicUrl;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading profile picture:', error);
       toast({
-        title: "Upload Error",
-        description: "An error occurred while uploading your profile picture.",
-        variant: "destructive"
+        title: 'Upload error',
+        description: error?.message || 'An error occurred while uploading your profile picture.',
+        variant: 'destructive',
       });
       return null;
     } finally {
@@ -238,7 +285,14 @@ export function useUserProfile() {
         updateData.profile_picture_url = profilePictureUrl;
       }
 
-      await updateProfile(updateData);
+      const result = await updateProfile(updateData);
+      if (profilePictureUrl && !result?.profile_picture_url) {
+        // Defensive: if DB did not persist for some reason
+        toast({
+          title: 'Saved with warning',
+          description: 'Image uploaded but URL did not persist. Please retry saving.',
+        });
+      }
       await saveSocialLinks();
 
       toast({
