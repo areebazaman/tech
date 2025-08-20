@@ -116,57 +116,63 @@ export function useUserProfile() {
 
   const uploadProfilePicture = async (file: File): Promise<string | null> => {
     if (!profile?.id) return null;
-    
+
+    // Basic validation to avoid long waits on invalid files
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      toast({
+        title: 'Invalid file type',
+        description: 'Please upload a JPG, PNG, GIF, or WEBP image.',
+        variant: 'destructive',
+      });
+      return null;
+    }
+    const maxSizeBytes = 5 * 1024 * 1024;
+    if (file.size > maxSizeBytes) {
+      toast({
+        title: 'File too large',
+        description: 'Please upload an image smaller than 5MB.',
+        variant: 'destructive',
+      });
+      return null;
+    }
+
     setUploadingPicture(true);
     try {
-      // Check if avatars bucket exists
-      const { data: buckets } = await supabase.storage.listBuckets();
-      const avatarsBucket = buckets?.find(bucket => bucket.name === 'Avatar');
-      
-      if (!avatarsBucket) {
-        toast({
-          title: "Storage Error",
-          description: "Profile picture storage is not configured. Please contact support.",
-          variant: "destructive"
-        });
-        return null;
-      }
-
-      // Generate unique filename
-      const fileExt = file.name.split('.').pop();
+      // Generate unique filename and attempt upload directly
+      const fileExt = file.name.split('.').pop() || 'png';
       const fileName = `${Date.now()}.${fileExt}`;
       const filePath = `${profile.id}/${fileName}`;
 
-      // Upload file
-      const { data: uploadData, error: uploadError } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('Avatar')
-        .upload(filePath, file, { 
-          cacheControl: '3600', 
-          upsert: false 
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type,
         });
 
       if (uploadError) {
         console.error('Upload error:', uploadError);
         toast({
-          title: "Upload Failed",
-          description: "Failed to upload profile picture. Please try again.",
-          variant: "destructive"
+          title: 'Upload failed',
+          description: uploadError.message || 'Failed to upload profile picture.',
+          variant: 'destructive',
         });
         return null;
       }
 
-      // Get public URL
       const { data: { publicUrl } } = supabase.storage
         .from('Avatar')
         .getPublicUrl(filePath);
 
       return publicUrl;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading profile picture:', error);
       toast({
-        title: "Upload Error",
-        description: "An error occurred while uploading your profile picture.",
-        variant: "destructive"
+        title: 'Upload error',
+        description: error?.message || 'An error occurred while uploading your profile picture.',
+        variant: 'destructive',
       });
       return null;
     } finally {
@@ -238,7 +244,14 @@ export function useUserProfile() {
         updateData.profile_picture_url = profilePictureUrl;
       }
 
-      await updateProfile(updateData);
+      const result = await updateProfile(updateData);
+      if (profilePictureUrl && !result?.profile_picture_url) {
+        // Defensive: if DB did not persist for some reason
+        toast({
+          title: 'Saved with warning',
+          description: 'Image uploaded but URL did not persist. Please retry saving.',
+        });
+      }
       await saveSocialLinks();
 
       toast({
