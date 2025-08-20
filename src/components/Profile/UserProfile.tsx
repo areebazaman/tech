@@ -46,6 +46,7 @@ const UserProfile: React.FC = () => {
     isLoadingProfile,
     uploadingPicture,
     updateUserProfile,
+    deleteProfilePicture,
     addSocialLink,
     updateSocialLink,
     removeSocialLink,
@@ -170,6 +171,18 @@ const UserProfile: React.FC = () => {
                     onChange={handleProfilePictureChange}
                     className="hidden"
                   />
+                  {(profile.profile_picture_url || profile.avatar_url) && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        const ok = await deleteProfilePicture();
+                        if (ok) setProfilePicture(null);
+                      }}
+                    >
+                      Remove Picture
+                    </Button>
+                  )}
                   {uploadingPicture && (
                     <div className="flex items-center space-x-2 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />

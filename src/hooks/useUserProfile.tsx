@@ -256,6 +256,40 @@ export function useUserProfile() {
     }
   };
 
+  const deleteProfilePicture = async () => {
+    if (!profile?.id) return false;
+    const currentUrl = profile.profile_picture_url || '';
+    if (!currentUrl || !currentUrl.includes('/storage/v1/object/')) return false;
+
+    try {
+      // Derive path relative to bucket from public URL
+      // Example: https://<proj>.supabase.co/storage/v1/object/public/avatars/<user_id>/<file>
+      const marker = '/public/avatars/';
+      const idx = currentUrl.indexOf(marker);
+      if (idx === -1) return false;
+      const filePath = currentUrl.substring(idx + marker.length);
+
+      // Remove from storage
+      const { error: removeError } = await supabase.storage
+        .from('avatars')
+        .remove([filePath]);
+      if (removeError) {
+        toast({ title: 'Delete failed', description: removeError.message, variant: 'destructive' });
+        return false;
+      }
+
+      // Null out the URL in DB
+      await updateProfile({ profile_picture_url: null });
+
+      toast({ title: 'Profile picture removed', description: 'Your profile picture was deleted.' });
+      return true;
+    } catch (error: any) {
+      console.error('Error deleting profile picture:', error);
+      toast({ title: 'Delete error', description: error?.message || 'Could not delete picture.', variant: 'destructive' });
+      return false;
+    }
+  };
+
   const updateUserProfile = async (profilePicture?: File) => {
     if (!profile?.id) return;
     
@@ -351,6 +385,7 @@ export function useUserProfile() {
     uploadingPicture,
     loadProfileData,
     updateUserProfile,
+    deleteProfilePicture,
     addSocialLink,
     updateSocialLink,
     removeSocialLink,
