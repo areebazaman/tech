@@ -139,6 +139,22 @@ export function useUserProfile() {
 
     setUploadingPicture(true);
     try {
+      // Quick preflight to surface bucket/permission issues fast
+      const preflight = await supabase.storage
+        .from('Avatar')
+        .list(profile.id, { limit: 1 });
+      if (preflight.error) {
+        const msg = preflight.error.message || '';
+        let description = msg;
+        if (/bucket|not\s*found/i.test(msg)) {
+          description = "Bucket 'Avatar' not found. Create it in Supabase Storage.";
+        } else if (/permission|access\s*denied|not\s*authorized/i.test(msg)) {
+          description = "Permission denied. Update Storage policies to allow authenticated users to list/upload to 'Avatar'.";
+        }
+        toast({ title: 'Storage not accessible', description, variant: 'destructive' });
+        return null;
+      }
+
       // Generate unique filename and attempt upload directly
       const fileExt = file.name.split('.').pop() || 'png';
       const fileName = `${Date.now()}.${fileExt}`;
@@ -151,29 +167,28 @@ export function useUserProfile() {
           cacheControl: '3600',
           upsert: false,
           contentType: file.type,
+        })
+        .then(({ data, error }) => {
+          if (error) throw error;
+          return data;
         });
 
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('UPLOAD_TIMEOUT')), 15000)
       );
 
-      let uploadError: any = null;
+      let uploadResult: any;
       try {
         // @ts-expect-error Promise race types
-        const result = await Promise.race([uploadPromise, timeoutPromise]);
-        // result may be void on success
+        uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
       } catch (e: any) {
-        uploadError = e;
-      }
-
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
+        console.error('Upload error:', e);
         let description = uploadError?.message || 'Failed to upload profile picture.';
-        if (description === 'UPLOAD_TIMEOUT') {
+        if (e?.message === 'UPLOAD_TIMEOUT') {
           description = "Upload timed out. Check your network and ensure the 'Avatar' bucket exists with proper policies.";
-        } else if (uploadError?.statusCode === '404' || /Not\s*Found|bucket/i.test(description)) {
+        } else if (e?.statusCode === '404' || /Not\s*Found|bucket/i.test(description)) {
           description = "Bucket 'Avatar' not found. Create a Storage bucket named exactly 'Avatar' in Supabase.";
-        } else if (uploadError?.statusCode === '403' || /Access\s*Denied|permission/i.test(description)) {
+        } else if (e?.statusCode === '403' || /Access\s*Denied|permission/i.test(description)) {
           description = "Permission denied. Update Storage policies to allow authenticated users to upload to 'Avatar'.";
         }
         toast({ title: 'Upload failed', description, variant: 'destructive' });
