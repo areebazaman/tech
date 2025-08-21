@@ -520,4 +520,8 @@ CREATE INDEX IF NOT EXISTS idx_progress_user_course ON user_progress(user_id, co
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+<<<<<<< HEAD
 CREATE INDEX IF NOT EXISTS idx_analytics_user_course ON learning_analytics(user_id, course_id);
+=======
+CREATE INDEX IF NOT EXISTS idx_analytics_user_course ON learning_analytics(user_id, course_id);
+>>>>>>> c19994adf1fd58ef58607e18caa4d871a2ff8ad8

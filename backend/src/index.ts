@@ -24,6 +24,15 @@ const extractContext = async (c: any): Promise<RequestContext> => {
   return { requestId, actorUserId, actorRole, sessionId, ip, userAgent };
 };
 
+const withAuditHeaders = (ctx: RequestContext) => ({
+  'x-request-id': ctx.requestId,
+  'x-user-id': ctx.actorUserId || '',
+  'x-user-role': ctx.actorRole || '',
+  'x-session-id': ctx.sessionId || '',
+  'x-real-ip': ctx.ip || '',
+  'user-agent': ctx.userAgent || '',
+});
+
 const logAudit = async (ctx: RequestContext, action: string, target: { table?: string; id?: string } = {}, details: any = null) => {
   try {
     await supabaseAdmin
@@ -40,7 +49,7 @@ const logAudit = async (ctx: RequestContext, action: string, target: { table?: s
         user_agent: ctx.userAgent,
         request_id: ctx.requestId,
         details,
-      });
+      }, { headers: withAuditHeaders(ctx) as any });
   } catch (e) {
     console.error("audit_log insert failed", e);
   }
@@ -135,7 +144,8 @@ app.post("/api/testing/upload-avatar", async (c) => {
     const { error: updateError } = await supabaseAdmin
       .from("users")
       .update({ profile_picture_url: publicUrl })
-      .eq("id", userId);
+      .eq("id", userId)
+      .withHeaders(withAuditHeaders(reqCtx) as any);
     if (updateError) return c.json({ success: false, message: updateError.message }, 400);
 
     await logAudit(reqCtx, "update_profile_picture", { table: "users", id: userId }, { publicUrl });
