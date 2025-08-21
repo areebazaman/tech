@@ -386,20 +386,31 @@ CREATE TABLE learning_analytics (
 );
 
 -- =====================================================
--- 13. Audit Logs and Security
 -- =====================================================
-CREATE TABLE audit_log (
-  id SERIAL PRIMARY KEY,
-  table_name TEXT NOT NULL,
-  record_id TEXT NOT NULL,
+CREATE SCHEMA IF NOT EXISTS app;
+
+CREATE TABLE IF NOT EXISTS app.audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  occurred_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  actor_user_id UUID,
+  actor_role TEXT,
   action TEXT NOT NULL,
-  old_values JSONB,
-  new_values JSONB,
-  changed_by UUID REFERENCES users(id),
-  changed_at TIMESTAMP DEFAULT now(),
+  target_table TEXT,
+  target_id TEXT,
+  session_id TEXT,
   ip_address INET,
-  user_agent TEXT
+  user_agent TEXT,
+  request_id UUID,
+  details JSONB,
+  old_values JSONB,
+  new_values JSONB
 );
+
+CREATE INDEX IF NOT EXISTS idx_audit_request_id ON app.audit_log(request_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON app.audit_log(actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON app.audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_when ON app.audit_log(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_target ON app.audit_log(target_table, target_id);
 
 -- =====================================================
 -- 14. Indexes for Performance
@@ -521,3 +532,112 @@ BEGIN
   RETURN notification_id;
 END;
 $$ LANGUAGE plpgsql; 
+
+-- =====================================================
+-- 16.1 Audit helper: context and generic table audit
+-- =====================================================
+
+-- Helper to get current request context from settings
+CREATE OR REPLACE FUNCTION app.get_request_context()
+RETURNS JSONB AS $$
+DECLARE
+  ctx JSONB;
+BEGIN
+  ctx := jsonb_build_object(
+    'actor_user_id', current_setting('app.actor_user_id', true),
+    'actor_role', current_setting('app.actor_role', true),
+    'session_id', current_setting('app.session_id', true),
+    'ip', current_setting('app.ip', true),
+    'ua', current_setting('app.ua', true),
+    'request_id', current_setting('app.request_id', true)
+  );
+  RETURN ctx;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Generic row-change audit function
+CREATE OR REPLACE FUNCTION app.audit_row_changes()
+RETURNS TRIGGER AS $$
+DECLARE
+  ctx JSONB := app.get_request_context();
+  v_actor UUID := NULLIF((ctx->>'actor_user_id'), '')::UUID;
+  v_role TEXT := NULLIF(ctx->>'actor_role', '');
+  v_session TEXT := NULLIF(ctx->>'session_id', '');
+  v_ip INET := NULLIF(ctx->>'ip', '')::INET;
+  v_ua TEXT := NULLIF(ctx->>'ua', '');
+  v_request UUID := NULLIF(ctx->>'request_id', '')::UUID;
+  v_action TEXT;
+  v_target_id TEXT;
+  v_old JSONB;
+  v_new JSONB;
+BEGIN
+  IF (TG_OP = 'INSERT') THEN
+    v_action := 'insert';
+    v_new := to_jsonb(NEW);
+    v_target_id := COALESCE(
+      NEW.id::TEXT,
+      (to_jsonb(NEW)->>'id'),
+      NULL
+    );
+  ELSIF (TG_OP = 'UPDATE') THEN
+    v_action := 'update';
+    v_old := to_jsonb(OLD);
+    v_new := to_jsonb(NEW);
+    v_target_id := COALESCE(
+      NEW.id::TEXT,
+      OLD.id::TEXT,
+      (to_jsonb(NEW)->>'id'),
+      (to_jsonb(OLD)->>'id'),
+      NULL
+    );
+  ELSIF (TG_OP = 'DELETE') THEN
+    v_action := 'delete';
+    v_old := to_jsonb(OLD);
+    v_target_id := COALESCE(
+      OLD.id::TEXT,
+      (to_jsonb(OLD)->>'id'),
+      NULL
+    );
+  END IF;
+
+  INSERT INTO app.audit_log (
+    actor_user_id, actor_role, action, target_table, target_id,
+    session_id, ip_address, user_agent, request_id,
+    details, old_values, new_values
+  ) VALUES (
+    v_actor, v_role, v_action, TG_TABLE_NAME, v_target_id,
+    v_session, v_ip, v_ua, v_request,
+    NULL, v_old, v_new
+  );
+
+  IF (TG_OP = 'DELETE') THEN
+    RETURN OLD;
+  ELSE
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Attach audit triggers to key tables
+DO $$
+DECLARE
+  r RECORD;
+  tables TEXT[] := ARRAY[
+    'institutions','users','user_social_links','user_institutions','student_parents',
+    'courses','course_tags','course_teachers','chapters','content_items','content_versions',
+    'enrollments','user_progress','quizzes','quiz_questions','quiz_attempts',
+    'assignments','assignment_submissions','chat_sessions','chat_messages',
+    'ai_interactions','reviews','peer_reviews','notifications','learning_analytics'
+  ];
+  v_sql TEXT;
+BEGIN
+  FOREACH r IN ARRAY tables LOOP
+    v_sql := format('CREATE TRIGGER audit_%I_changes AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION app.audit_row_changes();', r, r);
+    BEGIN
+      EXECUTE v_sql;
+    EXCEPTION WHEN duplicate_object THEN
+      -- ignore if trigger exists
+      NULL;
+    END;
+  END LOOP;
+END $$;
