@@ -415,16 +415,16 @@ CREATE INDEX IF NOT EXISTS idx_audit_target ON app.audit_log(target_table, targe
 -- =====================================================
 -- 14. Indexes for Performance
 -- =====================================================
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_institution ON user_institutions(institution_id);
-CREATE INDEX idx_courses_institution ON courses(institution_id);
-CREATE INDEX idx_enrollments_user ON enrollments(user_id);
-CREATE INDEX idx_enrollments_course ON enrollments(course_id);
-CREATE INDEX idx_progress_user_course ON user_progress(user_id, course_id);
-CREATE INDEX idx_chat_sessions_user ON chat_sessions(user_id);
-CREATE INDEX idx_chat_messages_session ON chat_messages(session_id);
-CREATE INDEX idx_notifications_user ON notifications(user_id);
-CREATE INDEX idx_analytics_user_course ON learning_analytics(user_id, course_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_institution ON user_institutions(institution_id);
+CREATE INDEX IF NOT EXISTS idx_courses_institution ON courses(institution_id);
+CREATE INDEX IF NOT EXISTS idx_enrollments_user ON enrollments(user_id);
+CREATE INDEX IF NOT EXISTS idx_enrollments_course ON enrollments(course_id);
+CREATE INDEX IF NOT EXISTS idx_progress_user_course ON user_progress(user_id, course_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_user_course ON learning_analytics(user_id, course_id);
 
 -- =====================================================
 -- 15. Row Level Security (RLS) Policies
