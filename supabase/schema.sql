@@ -499,18 +499,29 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Triggers for updated_at
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+-- Triggers for updated_at (idempotent)
+DO $$
+BEGIN
+  BEGIN
+    CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
 
-CREATE TRIGGER update_courses_updated_at BEFORE UPDATE ON courses
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  BEGIN
+    CREATE TRIGGER update_courses_updated_at BEFORE UPDATE ON courses
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
 
-CREATE TRIGGER update_content_items_updated_at BEFORE UPDATE ON content_items
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  BEGIN
+    CREATE TRIGGER update_content_items_updated_at BEFORE UPDATE ON content_items
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
 
-CREATE TRIGGER update_chapters_updated_at BEFORE UPDATE ON chapters
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  BEGIN
+    CREATE TRIGGER update_chapters_updated_at BEFORE UPDATE ON chapters
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
 
 -- Function to create notification
 CREATE OR REPLACE FUNCTION create_notification(
