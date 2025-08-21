@@ -555,12 +555,34 @@ DECLARE
   ctx JSONB;
 BEGIN
   ctx := jsonb_build_object(
-    'actor_user_id', current_setting('app.actor_user_id', true),
-    'actor_role', current_setting('app.actor_role', true),
-    'session_id', current_setting('app.session_id', true),
-    'ip', current_setting('app.ip', true),
-    'ua', current_setting('app.ua', true),
-    'request_id', current_setting('app.request_id', true)
+    'actor_user_id', COALESCE(
+      NULLIF(current_setting('app.actor_user_id', true), ''),
+      NULLIF(current_setting('request.header.x-user-id', true), ''),
+      NULLIF(current_setting('request.jwt.claim.sub', true), '')
+    ),
+    'actor_role', COALESCE(
+      NULLIF(current_setting('app.actor_role', true), ''),
+      NULLIF(current_setting('request.header.x-user-role', true), ''),
+      NULLIF(current_setting('request.jwt.claim.role', true), '')
+    ),
+    'session_id', COALESCE(
+      NULLIF(current_setting('app.session_id', true), ''),
+      NULLIF(current_setting('request.header.x-session-id', true), ''),
+      NULLIF(current_setting('request.jwt.claim.session_id', true), '')
+    ),
+    'ip', COALESCE(
+      NULLIF(current_setting('app.ip', true), ''),
+      NULLIF(current_setting('request.header.x-forwarded-for', true), ''),
+      NULLIF(current_setting('request.header.x-real-ip', true), '')
+    ),
+    'ua', COALESCE(
+      NULLIF(current_setting('app.ua', true), ''),
+      NULLIF(current_setting('request.header.user-agent', true), '')
+    ),
+    'request_id', COALESCE(
+      NULLIF(current_setting('app.request_id', true), ''),
+      NULLIF(current_setting('request.header.x-request-id', true), '')
+    )
   );
   RETURN ctx;
 END;
@@ -581,7 +603,24 @@ DECLARE
   v_target_id TEXT;
   v_old JSONB;
   v_new JSONB;
+  v_details JSONB;
 BEGIN
+  -- backfill actor role from user_institutions if missing
+  IF v_actor IS NOT NULL AND (v_role IS NULL OR v_role = '') THEN
+    SELECT ui.role
+    INTO v_role
+    FROM user_institutions ui
+    WHERE ui.user_id = v_actor AND ui.status = 'active'
+    ORDER BY CASE ui.role
+      WHEN 'super_admin' THEN 1
+      WHEN 'school_admin' THEN 2
+      WHEN 'teacher' THEN 3
+      WHEN 'student' THEN 4
+      WHEN 'parent' THEN 5
+      ELSE 99 END
+    LIMIT 1;
+  END IF;
+
   IF (TG_OP = 'INSERT') THEN
     v_action := 'insert';
     v_new := to_jsonb(NEW);
@@ -590,10 +629,35 @@ BEGIN
       (to_jsonb(NEW)->>'id'),
       NULL
     );
+    v_details := jsonb_build_object(
+      'action', v_action,
+      'message', format('created %s', TG_TABLE_NAME)
+    );
   ELSIF (TG_OP = 'UPDATE') THEN
     v_action := 'update';
     v_old := to_jsonb(OLD);
     v_new := to_jsonb(NEW);
+    -- compute changed columns and diff
+    WITH new_pairs AS (
+      SELECT key, value FROM jsonb_each(v_new)
+    ),
+    old_pairs AS (
+      SELECT key, value FROM jsonb_each(v_old)
+    ),
+    diffs AS (
+      SELECT n.key,
+             o.value AS old_value,
+             n.value AS new_value
+      FROM new_pairs n
+      JOIN old_pairs o USING (key)
+      WHERE (n.value)::text IS DISTINCT FROM (o.value)::text
+    )
+    SELECT jsonb_build_object(
+      'action', v_action,
+      'message', format('updated %s', TG_TABLE_NAME),
+      'changed_columns', COALESCE((SELECT jsonb_agg(key) FROM diffs), '[]'::jsonb),
+      'diff', COALESCE((SELECT jsonb_object_agg(key, jsonb_build_object('old', old_value, 'new', new_value)) FROM diffs), '{}'::jsonb)
+    ) INTO v_details;
     v_target_id := COALESCE(
       NEW.id::TEXT,
       OLD.id::TEXT,
@@ -609,6 +673,14 @@ BEGIN
       (to_jsonb(OLD)->>'id'),
       NULL
     );
+    v_details := jsonb_build_object(
+      'action', v_action,
+      'message', format('deleted %s', TG_TABLE_NAME)
+    );
+  END IF;
+
+  IF v_request IS NULL THEN
+    v_request := gen_random_uuid();
   END IF;
 
   INSERT INTO app.audit_log (
@@ -618,7 +690,7 @@ BEGIN
   ) VALUES (
     v_actor, v_role, v_action, TG_TABLE_NAME, v_target_id,
     v_session, v_ip, v_ua, v_request,
-    NULL, v_old, v_new
+    v_details, v_old, v_new
   );
 
   IF (TG_OP = 'DELETE') THEN
@@ -628,6 +700,26 @@ BEGIN
   END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Helper to set audit context explicitly (for single-call functions or when headers are not available)
+CREATE OR REPLACE FUNCTION app.set_audit_context(
+  p_actor_user_id UUID DEFAULT NULL,
+  p_actor_role TEXT DEFAULT NULL,
+  p_session_id TEXT DEFAULT NULL,
+  p_ip INET DEFAULT NULL,
+  p_user_agent TEXT DEFAULT NULL,
+  p_request_id UUID DEFAULT NULL
+)
+RETURNS VOID AS $$
+BEGIN
+  PERFORM set_config('app.actor_user_id', COALESCE(p_actor_user_id::text, ''), true);
+  PERFORM set_config('app.actor_role', COALESCE(p_actor_role, ''), true);
+  PERFORM set_config('app.session_id', COALESCE(p_session_id, ''), true);
+  PERFORM set_config('app.ip', COALESCE(p_ip::text, ''), true);
+  PERFORM set_config('app.ua', COALESCE(p_user_agent, ''), true);
+  PERFORM set_config('app.request_id', COALESCE(p_request_id::text, ''), true);
+END;
+$$ LANGUAGE plpgsql;
 
 -- Attach audit triggers to key tables
 DO $$
