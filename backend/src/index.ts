@@ -3,7 +3,70 @@ import { cors } from "hono/cors";
 import { supabase, supabaseAdmin, type Student, type StudentCourse } from "./supabase";
 import { v4 as uuidv4 } from "uuid";
 
+type RequestContext = {
+  requestId: string;
+  actorUserId: string | null;
+  actorRole: string | null;
+  sessionId: string | null;
+  ip: string | null;
+  userAgent: string | null;
+};
+
+const extractContext = async (c: any): Promise<RequestContext> => {
+  const headers = (name: string) => c.req.header(name) || c.req.header(name.toLowerCase());
+  const requestId = headers("x-request-id") || uuidv4();
+  const actorUserId = headers("x-user-id") || null;
+  const actorRole = headers("x-user-role") || null;
+  const sessionId = headers("x-session-id") || null;
+  const ipHeader = headers("x-forwarded-for") || headers("cf-connecting-ip") || headers("x-real-ip");
+  const ip = (ipHeader || (c.req.raw as any)?.ip || null) as string | null;
+  const userAgent = headers("user-agent") || null;
+  return { requestId, actorUserId, actorRole, sessionId, ip, userAgent };
+};
+
+const withAuditHeaders = (ctx: RequestContext) => ({
+  'x-request-id': ctx.requestId,
+  'x-user-id': ctx.actorUserId || '',
+  'x-user-role': ctx.actorRole || '',
+  'x-session-id': ctx.sessionId || '',
+  'x-real-ip': ctx.ip || '',
+  'user-agent': ctx.userAgent || '',
+});
+
+const logAudit = async (ctx: RequestContext, action: string, target: { table?: string; id?: string } = {}, details: any = null) => {
+  try {
+    await supabaseAdmin
+      .schema("app")
+      .from("audit_log")
+      .insert({
+        actor_user_id: ctx.actorUserId,
+        actor_role: ctx.actorRole,
+        action,
+        target_table: target.table || null,
+        target_id: target.id || null,
+        session_id: ctx.sessionId,
+        ip_address: ctx.ip,
+        user_agent: ctx.userAgent,
+        request_id: ctx.requestId,
+        details,
+      }, { headers: withAuditHeaders(ctx) as any });
+  } catch (e) {
+    console.error("audit_log insert failed", e);
+  }
+};
+
 const app = new Hono();
+
+// Global request audit middleware
+app.use("/*", async (c, next) => {
+  const ctx = await extractContext(c);
+  (c as any).requestContext = ctx;
+  await logAudit(ctx, "api_call", { table: null, id: null }, {
+    method: c.req.method,
+    path: c.req.path,
+  });
+  return next();
+});
 
 // CORS — include your frontend on 8080
 app.use(
@@ -30,6 +93,7 @@ app.get("/", (c) =>
 // Testing-only: Upload avatar without client session (uses service role if available)
 app.post("/api/testing/upload-avatar", async (c) => {
   try {
+    const reqCtx: RequestContext = (c as any).requestContext || (await extractContext(c));
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return c.json({
         success: false,
@@ -80,9 +144,11 @@ app.post("/api/testing/upload-avatar", async (c) => {
     const { error: updateError } = await supabaseAdmin
       .from("users")
       .update({ profile_picture_url: publicUrl })
-      .eq("id", userId);
+      .eq("id", userId)
+      .withHeaders(withAuditHeaders(reqCtx) as any);
     if (updateError) return c.json({ success: false, message: updateError.message }, 400);
 
+    await logAudit(reqCtx, "update_profile_picture", { table: "users", id: userId }, { publicUrl });
     return c.json({ success: true, publicUrl });
   } catch (err: any) {
     console.error("/api/testing/upload-avatar error:", err);
@@ -93,6 +159,7 @@ app.post("/api/testing/upload-avatar", async (c) => {
 // Get all students with their courses and progress
 app.get("/api/students", async (c) => {
   try {
+    const reqCtx: RequestContext = (c as any).requestContext || (await extractContext(c));
     // Fetch all users who are students
     const { data: students, error: studentsError } = await supabase
       .from("users")
@@ -199,11 +266,13 @@ app.get("/api/students", async (c) => {
       })
     );
 
-    return c.json({
+    const responsePayload = {
       success: true,
       data: studentsWithCourses,
       count: studentsWithCourses.length,
-    });
+    };
+    await logAudit(reqCtx, "view_students_list", { table: "users" }, { count: studentsWithCourses.length });
+    return c.json(responsePayload);
   } catch (error) {
     console.error("Error in /api/students:", error);
     return c.json({ success: false, message: "Internal server error" }, 500);
@@ -214,6 +283,7 @@ app.get("/api/students", async (c) => {
 app.get("/api/students/:id", async (c) => {
   try {
     const id = c.req.param("id");
+    const reqCtx: RequestContext = (c as any).requestContext || (await extractContext(c));
 
     const { data: student, error: studentError } = await supabase
       .from("users")
@@ -304,6 +374,7 @@ app.get("/api/students/:id", async (c) => {
       courses: courses.filter(Boolean) as StudentCourse[],
     };
 
+    await logAudit(reqCtx, "view_student", { table: "users", id }, null);
     return c.json({ success: true, data: studentWithCourses });
   } catch (error) {
     console.error("Error in /api/students/:id:", error);
@@ -315,6 +386,7 @@ app.get("/api/students/:id", async (c) => {
 app.get("/api/courses/:courseId/students", async (c) => {
   try {
     const courseId = parseInt(c.req.param("courseId"));
+    const reqCtx: RequestContext = (c as any).requestContext || (await extractContext(c));
 
     const { data: enrollments, error: enrollmentsError } = await supabase
       .from("enrollments")
@@ -396,11 +468,13 @@ app.get("/api/courses/:courseId/students", async (c) => {
 
     const validStudents = students.filter(Boolean) as Student[];
 
-    return c.json({
+    const payload = {
       success: true,
       data: validStudents,
       count: validStudents.length,
-    });
+    };
+    await logAudit(reqCtx, "view_course_students", { table: "courses", id: String(courseId) }, { count: validStudents.length });
+    return c.json(payload);
   } catch (error) {
     console.error("Error in /api/courses/:courseId/students:", error);
     return c.json({ success: false, message: "Internal server error" }, 500);
@@ -411,6 +485,7 @@ app.get("/api/courses/:courseId/students", async (c) => {
 app.get("/api/students/:id/progress", async (c) => {
   try {
     const id = c.req.param("id");
+    const reqCtx: RequestContext = (c as any).requestContext || (await extractContext(c));
 
     // Get student's enrollments
     const { data: enrollments, error: enrollmentsError } = await supabase
@@ -496,6 +571,7 @@ app.get("/api/students/:id/progress", async (c) => {
       courses: courseProgress,
     };
 
+    await logAudit(reqCtx, "view_student_progress", { table: "users", id }, { total_courses: totalCourses });
     return c.json({ success: true, data: progress });
   } catch (error) {
     console.error("Error in /api/students/:id/progress:", error);
@@ -507,6 +583,7 @@ app.get("/api/students/:id/progress", async (c) => {
 app.get("/api/students/search", async (c) => {
   try {
     const query = c.req.query("q")?.toLowerCase();
+    const reqCtx: RequestContext = (c as any).requestContext || (await extractContext(c));
 
     if (!query) {
       return c.json(
@@ -569,11 +646,13 @@ app.get("/api/students/search", async (c) => {
       })
     );
 
-    return c.json({
+    const result = {
       success: true,
       data: studentsWithCourses,
       count: studentsWithCourses.length,
-    });
+    };
+    await logAudit(reqCtx, "search_students", { table: "users" }, { query, results: studentsWithCourses.length });
+    return c.json(result);
   } catch (error) {
     console.error("Error in /api/students/search:", error);
     return c.json({ success: false, message: "Internal server error" }, 500);

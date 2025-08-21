@@ -385,139 +385,143 @@ CREATE TABLE learning_analytics (
   recorded_at TIMESTAMP DEFAULT now()
 );
 
--- =====================================================
--- 13. Audit Logs and Security
--- =====================================================
-CREATE TABLE audit_log (
-  id SERIAL PRIMARY KEY,
-  table_name TEXT NOT NULL,
-  record_id TEXT NOT NULL,
+CREATE SCHEMA IF NOT EXISTS app;
+
+CREATE TABLE IF NOT EXISTS app.audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  occurred_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  actor_user_id UUID,
+  actor_role TEXT,
   action TEXT NOT NULL,
-  old_values JSONB,
-  new_values JSONB,
-  changed_by UUID REFERENCES users(id),
-  changed_at TIMESTAMP DEFAULT now(),
+  target_table TEXT,
+  target_id TEXT,
+  session_id TEXT,
   ip_address INET,
-  user_agent TEXT
+  user_agent TEXT,
+  request_id UUID,
+  details JSONB,
+  old_values JSONB,
+  new_values JSONB
 );
 
--- =====================================================
--- 14. Indexes for Performance
--- =====================================================
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_institution ON user_institutions(institution_id);
-CREATE INDEX idx_courses_institution ON courses(institution_id);
-CREATE INDEX idx_enrollments_user ON enrollments(user_id);
-CREATE INDEX idx_enrollments_course ON enrollments(course_id);
-CREATE INDEX idx_progress_user_course ON user_progress(user_id, course_id);
-CREATE INDEX idx_chat_sessions_user ON chat_sessions(user_id);
-CREATE INDEX idx_chat_messages_session ON chat_messages(session_id);
-CREATE INDEX idx_notifications_user ON notifications(user_id);
-CREATE INDEX idx_analytics_user_course ON learning_analytics(user_id, course_id);
+CREATE INDEX IF NOT EXISTS idx_audit_request_id ON app.audit_log(request_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON app.audit_log(actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON app.audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_when ON app.audit_log(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_target ON app.audit_log(target_table, target_id);
 
--- =====================================================
--- 15. Row Level Security (RLS) Policies
--- =====================================================
--- For development: Disable RLS to allow API access
--- In production, you should enable RLS with proper policies
-ALTER TABLE users DISABLE ROW LEVEL SECURITY;
-ALTER TABLE user_institutions DISABLE ROW LEVEL SECURITY;
-ALTER TABLE courses DISABLE ROW LEVEL SECURITY;
-ALTER TABLE course_teachers DISABLE ROW LEVEL SECURITY;
-ALTER TABLE enrollments DISABLE ROW LEVEL SECURITY;
-ALTER TABLE user_progress DISABLE ROW LEVEL SECURITY;
-ALTER TABLE chat_sessions DISABLE ROW LEVEL SECURITY;
-ALTER TABLE chat_messages DISABLE ROW LEVEL SECURITY;
 
--- =====================================================
--- 15.1. Production RLS Policies (Uncomment for production)
--- =====================================================
--- Enable RLS on all tables (for production)
--- ALTER TABLE users ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE user_institutions ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE enrollments ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE user_progress ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE chat_sessions ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 
--- Basic RLS policies (commented out for development)
--- Uncomment these when you enable RLS for production
--- CREATE POLICY "Users can view their own profile" ON users
---   FOR SELECT USING (auth.uid() = id);
 
--- CREATE POLICY "Users can update their own profile" ON users
---   FOR UPDATE USING (auth.uid() = id);
 
--- -- Allow API access to users table (for backend)
--- CREATE POLICY "API can view all users" ON users
---   FOR SELECT USING (true);
 
--- -- Allow API access to enrollments
--- CREATE POLICY "API can view enrollments" ON enrollments
---   FOR SELECT USING (true);
 
--- -- Allow API access to courses
--- CREATE POLICY "API can view courses" ON courses
---   FOR SELECT USING (true);
 
--- -- Allow API access to user_progress
--- CREATE POLICY "API can view user_progress" ON user_progress
---   FOR SELECT USING (true);
-
--- -- Allow users to view courses in their institution
--- CREATE POLICY "Users can view courses in their institution" ON courses
---   FOR SELECT USING (
---     EXISTS (
---       SELECT 1 FROM user_institutions ui
---       WHERE ui.user_id = auth.uid()
---       AND ui.institution_id = courses.institution_id
---     )
---   );
-
--- =====================================================
--- 16. Functions and Triggers
--- =====================================================
-
--- Function to update updated_at timestamp
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = now();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
-
--- Triggers for updated_at
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_courses_updated_at BEFORE UPDATE ON courses
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_content_items_updated_at BEFORE UPDATE ON content_items
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_chapters_updated_at BEFORE UPDATE ON chapters
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- Function to create notification
-CREATE OR REPLACE FUNCTION create_notification(
-  p_user_id UUID,
-  p_title TEXT,
-  p_message TEXT,
-  p_type TEXT,
-  p_related_entity_type TEXT DEFAULT NULL,
-  p_related_entity_id TEXT DEFAULT NULL
-)
-RETURNS INTEGER AS $$
+CREATE OR REPLACE FUNCTION app.get_request_context()
+RETURNS JSONB AS $$
 DECLARE
-  notification_id INTEGER;
+  ctx JSONB;
 BEGIN
-  INSERT INTO notifications (user_id, title, message, type, related_entity_type, related_entity_id)
-  VALUES (p_user_id, p_title, p_message, p_type, p_related_entity_type, p_related_entity_id)
-  RETURNING id INTO notification_id;
-  
-  RETURN notification_id;
+  ctx := jsonb_build_object(
+    'actor_user_id', current_setting('app.actor_user_id', true),
+    'actor_role',    current_setting('app.actor_role', true),
+    'session_id',    current_setting('app.session_id', true),
+    'ip',            current_setting('app.ip', true),
+    'ua',            current_setting('app.ua', true),
+    'request_id',    current_setting('app.request_id', true)
+  );
+  RETURN ctx;
 END;
-$$ LANGUAGE plpgsql; 
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION app.audit_row_changes()
+RETURNS TRIGGER AS $$
+DECLARE
+  ctx JSONB := app.get_request_context();
+  v_actor UUID := NULLIF((ctx->>'actor_user_id'), '')::UUID;
+  v_role TEXT := NULLIF(ctx->>'actor_role', '');
+  v_session TEXT := NULLIF(ctx->>'session_id', '');
+  v_ip INET := NULLIF(ctx->>'ip', '')::INET;
+  v_ua TEXT := NULLIF(ctx->>'ua', '');
+  v_request UUID := NULLIF(ctx->>'request_id', '')::UUID;
+  v_action TEXT;
+  v_target_id TEXT;
+  v_old JSONB;
+  v_new JSONB;
+BEGIN
+  IF (TG_OP = 'INSERT') THEN
+    v_action := 'insert';
+    v_new := to_jsonb(NEW);
+    v_target_id := COALESCE(NEW.id::TEXT, (to_jsonb(NEW)->>'id'));
+  ELSIF (TG_OP = 'UPDATE') THEN
+    v_action := 'update';
+    v_old := to_jsonb(OLD);
+    v_new := to_jsonb(NEW);
+    v_target_id := COALESCE(NEW.id::TEXT, OLD.id::TEXT, (to_jsonb(NEW)->>'id'), (to_jsonb(OLD)->>'id'));
+  ELSIF (TG_OP = 'DELETE') THEN
+    v_action := 'delete';
+    v_old := to_jsonb(OLD);
+    v_target_id := COALESCE(OLD.id::TEXT, (to_jsonb(OLD)->>'id'));
+  END IF;
+
+  INSERT INTO app.audit_log (
+    actor_user_id, actor_role, action, target_table, target_id,
+    session_id, ip_address, user_agent, request_id,
+    details, old_values, new_values
+  ) VALUES (
+    v_actor, v_role, v_action, TG_TABLE_NAME, v_target_id,
+    v_session, v_ip, v_ua, v_request,
+    NULL, v_old, v_new
+  );
+
+  IF (TG_OP = 'DELETE') THEN
+    RETURN OLD;
+  ELSE
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DO $$
+DECLARE
+  r TEXT;
+  tables TEXT[] := ARRAY[
+    'institutions','users','user_social_links','user_institutions','student_parents',
+    'courses','course_tags','course_teachers','chapters','content_items','content_versions',
+    'enrollments','user_progress','quizzes','quiz_questions','quiz_attempts',
+    'assignments','assignment_submissions','chat_sessions','chat_messages',
+    'ai_interactions','reviews','peer_reviews','notifications','learning_analytics'
+  ];
+  v_sql TEXT;
+BEGIN
+  FOREACH r IN ARRAY tables LOOP
+    v_sql := format(
+      'CREATE TRIGGER audit_%I_changes AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION app.audit_row_changes();',
+      r, r
+    );
+    BEGIN
+      EXECUTE v_sql;
+    EXCEPTION WHEN duplicate_object THEN
+      NULL;
+    END;
+  END LOOP;
+END $$;
+
+
+
+
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_institution ON user_institutions(institution_id);
+CREATE INDEX IF NOT EXISTS idx_courses_institution ON courses(institution_id);
+CREATE INDEX IF NOT EXISTS idx_enrollments_user ON enrollments(user_id);
+CREATE INDEX IF NOT EXISTS idx_enrollments_course ON enrollments(course_id);
+CREATE INDEX IF NOT EXISTS idx_progress_user_course ON user_progress(user_id, course_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+<<<<<<< HEAD
+CREATE INDEX IF NOT EXISTS idx_analytics_user_course ON learning_analytics(user_id, course_id);
+=======
+CREATE INDEX IF NOT EXISTS idx_analytics_user_course ON learning_analytics(user_id, course_id);
+>>>>>>> c19994adf1fd58ef58607e18caa4d871a2ff8ad8
